@@ -336,7 +336,8 @@ struct atuwi_mgmt {
 
 
 struct atuwi_softc {
-	struct arpcom		arpcom;
+	struct ifnet		*atuwi_ifp;
+	device_t		atuwi_dev;
 	usbd_device_handle	atuwi_udev;
 	usbd_interface_handle	atuwi_iface;
 	struct ifmedia		atuwi_media;

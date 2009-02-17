@@ -57,11 +57,14 @@ __FBSDID("$ATUWI: $Id: if_atuwi.c,v 1.27 2004/10/25 11:31:26 daan Exp $");
 #include <sys/module.h>
 #include <sys/kernel.h>
 #include <sys/socket.h>
+#include <sys/priv.h>
 
 #include <net/if.h>
 #include <net/if_arp.h>
 #include <net/ethernet.h>
 #include <net/if_media.h>
+#include <net/if_types.h>
+#include <net/if_dl.h>
 
 #include <net/bpf.h>
 
@@ -71,6 +74,7 @@ __FBSDID("$ATUWI: $Id: if_atuwi.c,v 1.27 2004/10/25 11:31:26 daan Exp $");
 #include <machine/bus.h>
 
 #include <dev/usb/usb.h>
+#include <dev/usb/usb_port.h>
 #include <dev/usb/usbdi.h>
 #include <dev/usb/usbdi_util.h>
 #include <dev/usb/usbdivar.h>
@@ -109,6 +113,9 @@ __FBSDID("$ATUWI: $Id: if_atuwi.c,v 1.27 2004/10/25 11:31:26 daan Exp $");
 #endif
 
 #include <sys/sysctl.h>
+
+MODULE_DEPEND(aue, usb, 1, 1, 1);
+MODULE_DEPEND(aue, ether, 1, 1, 1);
 
 
 #define FLAG_ALWAYS		0x80000
@@ -233,7 +240,7 @@ SYSCTL_INT(_hw_atuwi_profiling, OID_AUTO, stop_calls, CTLFLAG_RW,
 /*
  * Various supported device vendors/products/radio type.
  */
-Static struct atuwi_type atuwi_devs[] = {
+static struct atuwi_type atuwi_devs[] = {
 #ifndef ATUWI_NO_RFMD
 	/* 0x03eb		0x7605 */
 	{ USB_VENDOR_ATMEL,	USB_PRODUCT_ATMEL_BW002,
@@ -276,24 +283,25 @@ Static struct atuwi_type atuwi_devs[] = {
 	{ 0, 0, 0, 0 }
 };
 
-Static int atuwi_match(device_ptr_t);
-Static int atuwi_attach(device_ptr_t);
-Static int atuwi_detach(device_ptr_t);
-Static void atuwi_shutdown(device_ptr_t);
-Static int atuwi_newbuf(struct atuwi_softc *, struct atuwi_chain *, struct mbuf *);
-Static int atuwi_encap(struct atuwi_softc *sc, struct mbuf *m, struct atuwi_chain *c);
-Static void atuwi_rxeof(usbd_xfer_handle, usbd_private_handle, usbd_status);
-Static void atuwi_txeof(usbd_xfer_handle, usbd_private_handle, usbd_status);
-Static void atuwi_start(struct ifnet *);
-Static void atuwi_rxstart(struct ifnet *);
-Static void atuwi_mgmt_loop(void *arg);
-Static int atuwi_ioctl(struct ifnet *, u_long, caddr_t);
-Static void atuwi_init(void *);
-Static void atuwi_stop(struct atuwi_softc *);
-Static void atuwi_watchdog(struct ifnet *);
+static device_probe_t atuwi_match;
+static device_attach_t atuwi_attach;
+static device_detach_t atuwi_detach;
+static device_shutdown_t atuwi_shutdown;
+
+static int atuwi_newbuf(struct atuwi_softc *, struct atuwi_chain *, struct mbuf *);
+static int atuwi_encap(struct atuwi_softc *sc, struct mbuf *m, struct atuwi_chain *c);
+static void atuwi_rxeof(usbd_xfer_handle, usbd_private_handle, usbd_status);
+static void atuwi_txeof(usbd_xfer_handle, usbd_private_handle, usbd_status);
+static void atuwi_start(struct ifnet *);
+static void atuwi_rxstart(struct ifnet *);
+static void atuwi_mgmt_loop(void *arg);
+static int atuwi_ioctl(struct ifnet *, u_long, caddr_t);
+static void atuwi_init(void *);
+static void atuwi_stop(struct atuwi_softc *);
+static void atuwi_watchdog(struct ifnet *);
 
 
-Static device_method_t atuwi_methods[] = {
+static device_method_t atuwi_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe, atuwi_match),
 	DEVMETHOD(device_attach, atuwi_attach),
@@ -302,13 +310,13 @@ Static device_method_t atuwi_methods[] = {
 	{ 0, 0 }
 };
 
-Static driver_t atuwi_driver = {
+static driver_t atuwi_driver = {
 	"atuwi",
 	atuwi_methods,
 	sizeof(struct atuwi_softc)
 };
 
-Static devclass_t atuwi_devclass;
+static devclass_t atuwi_devclass;
 
 DRIVER_MODULE(atuwi, uhub, atuwi_driver, atuwi_devclass, usbd_driver_load, 0);
 MODULE_DEPEND(atuwi, usb, 1, 1, 1);
@@ -316,7 +324,7 @@ MODULE_DEPEND(atuwi, ether, 1, 1, 1);
 
 
 
-Static void atuwi_msleep(struct atuwi_softc *sc, int ms)
+static void atuwi_msleep(struct atuwi_softc *sc, int ms)
 {
 	u_int8_t	dummy;
 	int		ticks;
@@ -348,7 +356,7 @@ static usbd_status atuwi_reset(struct atuwi_softc *sc)
 }
 
 
-Static usbd_status atuwi_usb_request(struct atuwi_softc *sc, u_int8_t type,
+static usbd_status atuwi_usb_request(struct atuwi_softc *sc, u_int8_t type,
 	 u_int8_t request, u_int16_t value, u_int16_t index, u_int16_t length,
 	 u_int8_t *data)
 {
@@ -411,7 +419,7 @@ Static usbd_status atuwi_usb_request(struct atuwi_softc *sc, u_int8_t type,
 }
 
 
-Static int atuwi_send_command(struct atuwi_softc *sc, u_int8_t *command,
+static int atuwi_send_command(struct atuwi_softc *sc, u_int8_t *command,
 	int size) {
 
 	return atuwi_usb_request(sc, UT_WRITE_VENDOR_DEVICE, 0x0e, 0x0000,
@@ -419,7 +427,7 @@ Static int atuwi_send_command(struct atuwi_softc *sc, u_int8_t *command,
 }
 
 
-Static int atuwi_get_cmd_status(struct atuwi_softc *sc, u_int8_t cmd,
+static int atuwi_get_cmd_status(struct atuwi_softc *sc, u_int8_t cmd,
 	 u_int8_t *status) {
 
 	/*
@@ -436,7 +444,7 @@ Static int atuwi_get_cmd_status(struct atuwi_softc *sc, u_int8_t cmd,
 }
 
 
-Static int atuwi_wait_completion(struct atuwi_softc *sc, u_int8_t cmd,
+static int atuwi_wait_completion(struct atuwi_softc *sc, u_int8_t cmd,
 	u_int8_t *status) {
 
 	int			err;
@@ -482,7 +490,7 @@ Static int atuwi_wait_completion(struct atuwi_softc *sc, u_int8_t cmd,
 }
 
 
-Static int atuwi_send_mib(struct atuwi_softc *sc, u_int8_t type,
+static int atuwi_send_mib(struct atuwi_softc *sc, u_int8_t type,
 	u_int8_t size, u_int8_t index, void *data)
 {
 
@@ -533,7 +541,7 @@ Static int atuwi_send_mib(struct atuwi_softc *sc, u_int8_t type,
 }
 
 
-Static int atuwi_get_mib(struct atuwi_softc *sc, u_int8_t type,
+static int atuwi_get_mib(struct atuwi_softc *sc, u_int8_t type,
 	u_int8_t size, u_int8_t index, u_int8_t *buf)
 {
 
@@ -543,7 +551,7 @@ Static int atuwi_get_mib(struct atuwi_softc *sc, u_int8_t type,
 }
 
 
-Static int atuwi_start_ibss(struct atuwi_softc *sc)
+static int atuwi_start_ibss(struct atuwi_softc *sc)
 {
 	int				err;
 	struct atuwi_cmd_start_ibss	Request;
@@ -589,7 +597,7 @@ Static int atuwi_start_ibss(struct atuwi_softc *sc)
 }
 
 
-Static int atuwi_start_scan(struct atuwi_softc *sc)
+static int atuwi_start_scan(struct atuwi_softc *sc)
 {
 	struct atuwi_cmd_do_scan	Scan;
 	usbd_status			err;
@@ -652,7 +660,7 @@ Static int atuwi_start_scan(struct atuwi_softc *sc)
 }
 
 
-Static int atuwi_switch_radio(struct atuwi_softc *sc, int state)
+static int atuwi_switch_radio(struct atuwi_softc *sc, int state)
 {
 	usbd_status		err;
 	struct atuwi_cmd	CmdRadio = {CMD_RADIO_ON, 0, 0};
@@ -687,7 +695,7 @@ Static int atuwi_switch_radio(struct atuwi_softc *sc, int state)
 }
 
 
-Static int atuwi_initial_config(struct atuwi_softc *sc)
+static int atuwi_initial_config(struct atuwi_softc *sc)
 {
 	usbd_status			err;
 /*	u_int8_t			rates[4] = {0x82, 0x84, 0x8B, 0x96};*/
@@ -820,7 +828,7 @@ Static int atuwi_initial_config(struct atuwi_softc *sc)
 }
 
 
-Static int atuwi_join(struct atuwi_softc *sc)
+static int atuwi_join(struct atuwi_softc *sc)
 {
 	struct atuwi_cmd_join		join;
 	u_int8_t			status;
@@ -871,7 +879,7 @@ Static int atuwi_join(struct atuwi_softc *sc)
 }
 
 
-Static void
+static void
 atuwi_airo_tap(struct atuwi_softc *sc, u_int8_t *pkt, u_int length,
     struct at76c503_rx_buffer *at_hdr)
 {
@@ -949,7 +957,7 @@ atuwi_airo_tap(struct atuwi_softc *sc, u_int8_t *pkt, u_int length,
 }
 
 
-Static int
+static int
 atuwi_send_packet(struct atuwi_softc *sc, struct atuwi_chain *c)
 {
 	usbd_status		err;
@@ -1011,7 +1019,7 @@ atuwi_send_packet(struct atuwi_softc *sc, struct atuwi_chain *c)
 }
 
 
-Static int atuwi_send_mgmt_packet(struct atuwi_softc *sc,
+static int atuwi_send_mgmt_packet(struct atuwi_softc *sc,
     struct atuwi_chain *c, u_int16_t length)
 {
 	struct atuwi_mgmt_packet	*packet;
@@ -1035,7 +1043,7 @@ Static int atuwi_send_mgmt_packet(struct atuwi_softc *sc,
 }
 
 
-Static int atuwi_authenticate(struct atuwi_softc *sc)
+static int atuwi_authenticate(struct atuwi_softc *sc)
 {
 	usbd_status			err;
 	struct atuwi_chain		*ch;
@@ -1120,7 +1128,7 @@ Static int atuwi_authenticate(struct atuwi_softc *sc)
 }
 	
 
-Static int atuwi_associate(struct atuwi_softc *sc)
+static int atuwi_associate(struct atuwi_softc *sc)
 {
 	usbd_status			err;
 	struct atuwi_chain		*ch;
@@ -1180,7 +1188,7 @@ Static int atuwi_associate(struct atuwi_softc *sc)
 /*
  * Get the state of the DFU unit
  */
-Static int8_t atuwi_get_dfu_state(struct atuwi_softc *sc)
+static int8_t atuwi_get_dfu_state(struct atuwi_softc *sc)
 {
 	u_int8_t	state;
 	
@@ -1194,7 +1202,7 @@ Static int8_t atuwi_get_dfu_state(struct atuwi_softc *sc)
 /*
  * Get MAC opmode
  */
-Static u_int8_t atuwi_get_opmode(struct atuwi_softc *sc, u_int8_t *mode)
+static u_int8_t atuwi_get_opmode(struct atuwi_softc *sc, u_int8_t *mode)
 {
 
 	return atuwi_usb_request(sc, UT_READ_VENDOR_INTERFACE, 0x33, 0x0001,
@@ -1205,7 +1213,7 @@ Static u_int8_t atuwi_get_opmode(struct atuwi_softc *sc, u_int8_t *mode)
 /*
  * Upload the internal firmware into the device
  */
-Static int atuwi_upload_internal_firmware(struct atuwi_softc *sc)
+static int atuwi_upload_internal_firmware(struct atuwi_softc *sc)
 {
 	int8_t			state;
 	int			bytes_left = 0;
@@ -1214,6 +1222,9 @@ Static int atuwi_upload_internal_firmware(struct atuwi_softc *sc)
 	int			block = 0;
 	u_int8_t		status[6];
 	int			err;
+
+	DEBUG(FLAG_FW, ("atuwi%d: starting atuwi_upload_internal_firmware...\n",
+		    sc->atuwi_unit));
 
 	/*
 	 * Uploading firmware is done with the DFU (Device Firmware Upgrade)
@@ -1366,7 +1377,7 @@ Static int atuwi_upload_internal_firmware(struct atuwi_softc *sc)
 }
 
 
-Static int atuwi_upload_external_firmware(struct atuwi_softc *sc) {
+static int atuwi_upload_external_firmware(struct atuwi_softc *sc) {
 	u_int8_t		*ptr = NULL;
 	int			bytes_left = 0;
 	int			block_size;
@@ -1491,7 +1502,7 @@ Static int atuwi_upload_external_firmware(struct atuwi_softc *sc) {
 }
 
 
-Static int atuwi_get_card_config(struct atuwi_softc *sc)
+static int atuwi_get_card_config(struct atuwi_softc *sc)
 {
 	struct atuwi_rfmd_conf		rfmd_conf;
 	struct atuwi_intersil_conf	intersil_conf;
@@ -1539,9 +1550,10 @@ Static int atuwi_get_card_config(struct atuwi_softc *sc)
 /*
  * Probe for an AT76c503 chip.
  */
-USB_MATCH(atuwi)
+static int atuwi_match(device_t self)
 {
-	USB_MATCH_START(atuwi, uaa);
+	/*USB_MATCH_START(atuwi, uaa);*/
+	struct usb_attach_arg *uaa = device_get_ivars(self);
 	struct atuwi_type		*t;
 
 	if (!uaa->iface)
@@ -1565,7 +1577,7 @@ USB_MATCH(atuwi)
  * if we return 0 the thread will go to sleep, if we return 1 we will be
  * called again immediately (like 'continue' does in a while-loop)
  */
-Static int atuwi_mgmt_state_machine(struct atuwi_softc *sc)
+static int atuwi_mgmt_state_machine(struct atuwi_softc *sc)
 {
 	struct atuwi_mgmt	*vars = &sc->atuwi_mgmt_vars;
 	usbd_status		err;
@@ -1773,7 +1785,7 @@ Static int atuwi_mgmt_state_machine(struct atuwi_softc *sc)
 }
 
 
-Static void atuwi_mgmt_loop(void *arg)
+static void atuwi_mgmt_loop(void *arg)
 {
 	struct atuwi_softc	*sc = arg;
 	int			again;
@@ -1814,7 +1826,7 @@ Static void atuwi_mgmt_loop(void *arg)
 }
 
 
-Static int
+static int
 atuwi_media_change(struct ifnet *ifp)
 {
 	struct atuwi_softc	*sc;
@@ -1854,7 +1866,7 @@ atuwi_media_change(struct ifnet *ifp)
 }
 
 
-Static void
+static void
 atuwi_media_status(struct ifnet *ifp, struct ifmediareq *req)
 {
 	struct atuwi_softc	*sc;
@@ -1879,13 +1891,17 @@ atuwi_media_status(struct ifnet *ifp, struct ifmediareq *req)
 }
 
 
+
 /*
  * Attach the interface. Allocate softc structures, do
  * setup and ethernet/BPF attach.
  */
-USB_ATTACH(atuwi)
+static int
+atuwi_attach(device_t self)
 {
-	USB_ATTACH_START(atuwi, sc, uaa);
+	struct atuwi_softc *sc = device_get_softc(self);
+	struct usb_attach_arg *uaa = device_get_ivars(self);
+
 	char				devinfo[1024];
 	struct ifnet			*ifp;
 	usbd_status			err; 
@@ -1946,24 +1962,28 @@ USB_ATTACH(atuwi)
 	if (err || (mode != MODE_NETCARD &&
 	    mode != MODE_NOFLASHNETCARD)) {
 
-		DEBUG(FLAG_INIT, ("atuwi%d: starting internal firmware "
-		    "download\n", sc->atuwi_unit));
+		DEBUG(FLAG_INIT, ("atuwi%d: starting internal firmware download\n", sc->atuwi_unit));
 
 		/* upload internal firmware */
 		err = atuwi_upload_internal_firmware(sc);
 		if (err) {
 			ATUWI_UNLOCK(sc);
 			mtx_destroy(&sc->atuwi_mtx);
+			DEBUG(FLAG_INIT, ("atuwi%d: USB_ATTACH_ERROR_RETURN...\n", sc->atuwi_unit));
+
 			USB_ATTACH_ERROR_RETURN;
 		}
 		
-		DEBUG(FLAG_INIT, ("atuwi%d: done...\n",
-		    sc->atuwi_unit));
+		DEBUG(FLAG_INIT, ("atuwi%d: internal firmware download done...\n", sc->atuwi_unit));
 		
 		ATUWI_UNLOCK(sc);
 		mtx_destroy(&sc->atuwi_mtx);
+
+		DEBUG(FLAG_INIT, ("atuwi%d: USB_ATTACH_NEED_RESET...\n", sc->atuwi_unit));
 		USB_ATTACH_NEED_RESET;
 	} 	
+
+	DEBUG(FLAG_INIT, ("atuwi%d: Made it to the next step 1...\n", sc->atuwi_unit));
 
 	uaa->iface = sc->atuwi_iface;
 	
@@ -1976,6 +1996,8 @@ USB_ATTACH(atuwi)
 		mtx_destroy(&sc->atuwi_mtx);
 		USB_ATTACH_ERROR_RETURN;
 	}
+
+	DEBUG(FLAG_INIT, ("atuwi%d: Made it to the next step 2...\n", sc->atuwi_unit));
 	
 	DEBUG(FLAG_INIT, ("atuwi%d: done...\n", sc->atuwi_unit));
 
@@ -2003,6 +2025,8 @@ USB_ATTACH(atuwi)
 	
 
 	/* read device config & get MAC address */
+	/*atuwi_getmac(sc, &eaddr);*/
+
 	err = atuwi_get_card_config(sc);
 	if (err) {
 		ERROR(("atuwi%d: could not get card cfg!\n", sc->atuwi_unit));
@@ -2026,15 +2050,15 @@ USB_ATTACH(atuwi)
 		    sc->atuwi_unit));
 	}
 	*/
+	DEBUG(FLAG_INIT, ("atuwi%d: done...\n", sc->atuwi_unit));
 
 	/* Show the world our MAC address */
 	DEBUG(FLAG_INIT, ("atuwi%d: Ethernet address: %6D\n", sc->atuwi_unit,
 		sc->atuwi_mac_addr, ":"));
 
-	bcopy(sc->atuwi_mac_addr,
-		(char *)&sc->arpcom.ac_enaddr, ETHER_ADDR_LEN);
-
-
+	/*bcopy(sc->atuwi_mac_addr,
+		(char *)&sc->atuwi_ifp.ac_enaddr, ETHER_ADDR_LEN);*/
+		
 	for (i=0; i<ATUWI_AVG_TIME; i++)
 		sc->atuwi_signalarr[i] = 0;
 	sc->atuwi_signaltotal = 0;
@@ -2043,7 +2067,13 @@ USB_ATTACH(atuwi)
 	sc->atuwi_cdata.atuwi_tx_inuse = 0;
 
 
-	ifp = &sc->arpcom.ac_if;
+	ifp = sc->atuwi_ifp = if_alloc(IFT_ETHER);
+	if (ifp == NULL) {
+		device_printf(sc->atuwi_dev, "can not if_alloc()\n");
+		ATUWI_UNLOCK(sc);
+		mtx_destroy(&sc->atuwi_mtx);
+		return ENXIO;
+	}
 	ifp->if_softc = sc;
 #if __FreeBSD_version >= 501113
 	if_initname(ifp, "atuwi", sc->atuwi_unit);
@@ -2154,15 +2184,15 @@ USB_ATTACH(atuwi)
 }
 
 
-Static int
-atuwi_detach(device_ptr_t dev)
+static int
+atuwi_detach(device_t dev)
 {
 	struct atuwi_softc	*sc;
 	struct ifnet		*ifp;
 	
 	sc = device_get_softc(dev);
 	ATUWI_LOCK(sc);
-	ifp = &sc->arpcom.ac_if;
+	ifp = sc->atuwi_ifp;
 
 	printf("atuwi%d: detach\n", sc->atuwi_unit);
 
@@ -2192,7 +2222,7 @@ atuwi_detach(device_ptr_t dev)
 /*
  * Initialize an RX descriptor and attach an MBUF cluster.
  */
-Static int
+static int
 atuwi_newbuf(struct atuwi_softc *sc, struct atuwi_chain *c, struct mbuf *m)
 {
 	struct mbuf		*m_new = NULL;
@@ -2224,7 +2254,7 @@ atuwi_newbuf(struct atuwi_softc *sc, struct atuwi_chain *c, struct mbuf *m)
 	return(0);
 }
 
-Static int
+static int
 atuwi_xfer_list_init(struct atuwi_softc *sc, struct atuwi_chain *ch,
     int listlen, int need_mbuf, int bufsize, struct atuwi_list_head *list)
 {
@@ -2279,7 +2309,7 @@ atuwi_xfer_list_init(struct atuwi_softc *sc, struct atuwi_chain *ch,
 }
 
 
-Static void
+static void
 atuwi_xfer_list_free(struct atuwi_softc *sc, struct atuwi_chain *ch,
     int listlen)
 {
@@ -2310,7 +2340,7 @@ atuwi_xfer_list_free(struct atuwi_softc *sc, struct atuwi_chain *ch,
 }
 
 
-Static void
+static void
 atuwi_rxstart(struct ifnet *ifp)
 {
 	struct atuwi_softc	*sc;
@@ -2354,7 +2384,7 @@ atuwi_rxstart(struct ifnet *ifp)
 }
 
 
-Static void
+static void
 atuwi_print_beacon(struct atuwi_softc *sc, struct atuwi_rxpkt *pkt)
 {
 	u_int8_t		*ptr;
@@ -2405,7 +2435,7 @@ atuwi_print_beacon(struct atuwi_softc *sc, struct atuwi_rxpkt *pkt)
 }
 
 
-Static void
+static void
 atuwi_handle_mgmt_packet(struct atuwi_softc *sc, struct atuwi_rxpkt *pkt)
 {
 	u_int8_t			*ptr;
@@ -2678,7 +2708,7 @@ atuwi_handle_mgmt_packet(struct atuwi_softc *sc, struct atuwi_rxpkt *pkt)
  * A frame has been uploaded: pass the resulting mbuf chain up to
  * the higher level protocols.
  */
-Static void atuwi_rxeof(usbd_xfer_handle xfer, usbd_private_handle priv,
+static void atuwi_rxeof(usbd_xfer_handle xfer, usbd_private_handle priv,
     usbd_status status)
 {
 	struct atuwi_softc	*sc;
@@ -2695,7 +2725,7 @@ Static void atuwi_rxeof(usbd_xfer_handle xfer, usbd_private_handle priv,
 	c = priv;
 	sc = c->atuwi_sc;
 	ATUWI_LOCK(sc);
-	ifp = &sc->arpcom.ac_if;
+	ifp = &sc->atuwi_ifp;
 
 #ifdef ATUWI_PROFILING
 	atuwi_profiling_rxeof++;
@@ -2827,7 +2857,7 @@ Static void atuwi_rxeof(usbd_xfer_handle xfer, usbd_private_handle priv,
 	}
 	
 	/*
-	if (!(ifp->if_flags & IFF_RUNNING)) {
+	if (!(ifp->if_flags & IFF_DRV_RUNNING)) {
 		ATUWI_UNLOCK(sc);
 		return;
 	}
@@ -2903,7 +2933,7 @@ done:
  * A frame was downloaded to the chip. It's safe for us to clean up
  * the list buffers.
  */
-Static void
+static void
 atuwi_txeof(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status)
 {
 	struct atuwi_softc	*sc;
@@ -2923,7 +2953,7 @@ atuwi_txeof(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status)
 	atuwi_profiling_txeof++;
 #endif /* ATUWI_PROFILING */
 
-	ifp = &sc->arpcom.ac_if;
+	ifp = sc->atuwi_ifp;
 	ifp->if_timer = 0;
 
 	c->atuwi_in_xfer = 0;
@@ -2944,7 +2974,7 @@ atuwi_txeof(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status)
 	 * set it then?
 	 */
 	if (sc->atuwi_cdata.atuwi_tx_inuse == 0) {
-		ifp->if_flags &= ~IFF_OACTIVE;
+		ifp->if_flags &= ~IFF_DRV_OACTIVE;
 	}
 	DEBUG(FLAG_TX, ("atuwi%d: txeof me=%d  status=%d\n", sc->atuwi_unit,
 		c->atuwi_idx, status));
@@ -3008,7 +3038,7 @@ atuwi_txeof(usbd_xfer_handle xfer, usbd_private_handle priv, usbd_status status)
 
 
 #ifdef ATUWI_TX_PADDING
-Static u_int8_t
+static u_int8_t
 atuwi_calculate_padding(int size)
 {
 	size %= 64;
@@ -3023,7 +3053,7 @@ atuwi_calculate_padding(int size)
 #endif /* ATUWI_TX_PADDING */
 
 
-Static int
+static int
 atuwi_encap(struct atuwi_softc *sc, struct mbuf *m, struct atuwi_chain *c)
 {
 	int			total_len;
@@ -3106,7 +3136,7 @@ atuwi_encap(struct atuwi_softc *sc, struct mbuf *m, struct atuwi_chain *c)
 }
 
 
-Static void
+static void
 atuwi_start(struct ifnet *ifp)
 {
 	struct atuwi_softc	*sc;
@@ -3127,7 +3157,7 @@ atuwi_start(struct ifnet *ifp)
 #endif /* ATUWI_PROFILING */
 
 	/*
-	if (ifp->if_flags & IFF_OACTIVE) {
+	if (ifp->if_flags & IFF_DRV_OACTIVE) {
 		ATUWI_UNLOCK(sc);
 		return;
 	}
@@ -3135,7 +3165,7 @@ atuwi_start(struct ifnet *ifp)
 
 	/*
 	 * TODO:
-	 * should we check for IFF_RUNNING here?
+	 * should we check for IFF_DRV_RUNNING here?
 	 */
 	
 	entry = SLIST_FIRST(&sc->atuwi_cdata.atuwi_tx_free);
@@ -3173,7 +3203,7 @@ atuwi_start(struct ifnet *ifp)
 
 		SLIST_REMOVE_HEAD(&sc->atuwi_cdata.atuwi_tx_free, atuwi_list);
 	
-		ifp->if_flags |= IFF_OACTIVE;
+		ifp->if_flags |= IFF_DRV_OACTIVE;
 		cd->atuwi_tx_inuse++;
 	
 		DEBUG(FLAG_TX, ("atuwi%d: index:%d (inuse=%d)\n",
@@ -3213,7 +3243,7 @@ atuwi_start(struct ifnet *ifp)
 			    sc->atuwi_unit));
 			IF_PREPEND(&ifp->if_snd, m_head);
 			if (--cd->atuwi_tx_inuse == 0)
-				ifp->if_flags &= ~IFF_OACTIVE;
+				ifp->if_flags &= ~IFF_DRV_OACTIVE;
 			ATUWI_UNLOCK(sc);
 			return;
 		}
@@ -3245,11 +3275,11 @@ atuwi_start(struct ifnet *ifp)
 }
 
 
-Static void
+static void
 atuwi_init(void *xsc)
 {
 	struct atuwi_softc	*sc = xsc;
-	struct ifnet		*ifp = &sc->arpcom.ac_if;
+	struct ifnet		*ifp = &sc->atuwi_ifp;
 	struct atuwi_chain	*c;
 	struct atuwi_cdata	*cd = &sc->atuwi_cdata;
 	usbd_status		err;
@@ -3263,7 +3293,7 @@ atuwi_init(void *xsc)
 
 	DEBUG(FLAG_INIT, ("atuwi%d: atuwi_init\n", sc->atuwi_unit));
 
-	if (ifp->if_flags & IFF_RUNNING) {
+	if (ifp->if_flags & IFF_DRV_RUNNING) {
 		ATUWI_UNLOCK(sc);
 		return;
 	}
@@ -3318,8 +3348,8 @@ atuwi_init(void *xsc)
 		usbd_transfer(c->atuwi_xfer);
 	}
 
-	bcopy((char *)&sc->arpcom.ac_enaddr, sc->atuwi_mac_addr,
-	    ETHER_ADDR_LEN);
+	/*bcopy((char *)&sc->atuwi_ifp.ac_enaddr, sc->atuwi_mac_addr,
+	    ETHER_ADDR_LEN);*/
 	DEBUG(FLAG_INIT, ("atuwi%d: starting up using MAC=%6D\n",
 	    sc->atuwi_unit, sc->atuwi_mac_addr, ":"));
 
@@ -3362,8 +3392,8 @@ atuwi_init(void *xsc)
 	sc->atuwi_mgmt_flags |= ATUWI_CHANGED_SETTINGS;
 	wakeup(sc);
 
-	ifp->if_flags |= IFF_RUNNING;
-	ifp->if_flags &= ~IFF_OACTIVE;
+	ifp->if_flags |= IFF_DRV_RUNNING;
+	ifp->if_flags &= ~IFF_DRV_OACTIVE;
 
 	ATUWI_UNLOCK(sc);
 
@@ -3371,7 +3401,7 @@ atuwi_init(void *xsc)
 }
 
 
-Static void
+static void
 atuwi_print_a_bunch_of_debug_things(struct atuwi_softc *sc)
 {
 	usbd_status		err;
@@ -3457,7 +3487,7 @@ atuwi_print_a_bunch_of_debug_things(struct atuwi_softc *sc)
 }
 
 
-Static int
+static int
 atuwi_set_wepkey(struct atuwi_softc *sc, int nr, u_int8_t *key, int len)
 {
 	if ((len != 5) && (len != 13))
@@ -3478,7 +3508,7 @@ atuwi_set_wepkey(struct atuwi_softc *sc, int nr, u_int8_t *key, int len)
 }
 
 
-Static int
+static int
 atuwi_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 {
 	struct atuwi_softc	*sc = ifp->if_softc;
@@ -3489,7 +3519,7 @@ atuwi_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 	struct thread		*td = curthread;
 	u_int8_t		tmp[32];
 	int			len;
-	struct wi_req		wreq;
+	/*struct wi_req		wreq;*/
 	
 	int			change;
 
@@ -3517,7 +3547,7 @@ atuwi_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 			
 		if (change & IFF_UP) {
 		
-			if (!(ifp->if_flags & IFF_RUNNING)) {
+			if (!(ifp->if_flags & IFF_DRV_RUNNING)) {
 				DEBUG(FLAG_INIT, ("atuwi%d: calling "
 				    "atuwi_init\n", sc->atuwi_unit));
 				atuwi_init(sc);
@@ -3553,19 +3583,19 @@ atuwi_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 		 *
 		if (ifp->if_flags & IFF_UP) {
 	
-			if (ifp->if_flags & IFF_RUNNING &&
+			if (ifp->if_flags & IFF_DRV_RUNNING &&
 			    ifp->if_flags & IFF_PROMISC &&
 			    !(sc->atuwi_if_flags & IFF_PROMISC)) {
 				sc->atuwi_rxfilt |= ATUWI_RXFILT_PROMISC;
 				atuwi_setword(sc, ATUWI_CMD_SET_PKT_FILTER,
 				    sc->atuwi_rxfilt);
-			} else if (ifp->if_flags & IFF_RUNNING &&
+			} else if (ifp->if_flags & IFF_DRV_RUNNING &&
 			    !(ifp->if_flags & IFF_PROMISC) &&
 			    sc->atuwi_if_flags & IFF_PROMISC) {
 				sc->atuwi_rxfilt &= ~ATUWI_RXFILT_PROMISC;
 				atuwi_setword(sc, ATUWI_CMD_SET_PKT_FILTER,
 				    sc->atuwi_rxfilt);
-			} else if (!(ifp->if_flags & IFF_RUNNING))
+			} else if (!(ifp->if_flags & IFF_DRV_RUNNING))
 				atuwi_init(sc);
 			
 			DEBUG(FLAG_IOCTL, ("atuwi%d: ioctl calling "
@@ -3573,7 +3603,7 @@ atuwi_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 			atuwi_init(sc);
 			
 		} else {
-			if (ifp->if_flags & IFF_RUNNING)
+			if (ifp->if_flags & IFF_DRV_RUNNING)
 				atuwi_stop(sc);
 		}
 		*/
@@ -3776,31 +3806,6 @@ atuwi_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 		err = ifmedia_ioctl(ifp, ifr, &sc->atuwi_media, command);
 		break;
 		
-	case SIOCGWAVELAN:
-		DEBUG(FLAG_IOCTL, ("atuwi%d: ioctl: get wavelan\n",
-		    sc->atuwi_unit));
-		/*
-		err = ether_ioctl(ifp, command, data);
-		break;
-		*/
-		
-		/* TODO: implement */
-
-		err = copyin(ifr->ifr_data, &wreq, sizeof(wreq));
-		if (err)
-			break;
-		
-		DEBUG(FLAG_IOCTL, ("atuwi%d: SIOCGWAVELAN\n", sc->atuwi_unit));
-		if (wreq.wi_len > WI_MAX_DATALEN) {
-			err = EINVAL;
-			break;
-		}
-		
-		DEBUG(FLAG_IOCTL, ("atuwi%d: ioctl: wi_type=%04x %d\n",
-		    sc->atuwi_unit, wreq.wi_type, wreq.wi_type));
-		err = 0;
-		/* err = EINVAL; */
-		break;
 	
 	case SIOCSWAVELAN:
 		DEBUG(FLAG_IOCTL, ("atuwi%d: ioctl: wavset type=%x\n",
@@ -3808,11 +3813,6 @@ atuwi_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 		err = 0;
 		break;
 
-	default:
-		DEBUG(FLAG_IOCTL, ("atuwi%d: ioctl: default\n",
-		    sc->atuwi_unit));
-		err = ether_ioctl(ifp, command, data);
-		break;
 	}
 
 	sc->atuwi_if_flags = ifp->if_flags;
@@ -3823,7 +3823,7 @@ atuwi_ioctl(struct ifnet *ifp, u_long command, caddr_t data)
 }
 
 
-Static void
+static void
 atuwi_watchdog(struct ifnet *ifp)
 {
 	struct atuwi_softc	*sc;
@@ -3869,7 +3869,7 @@ atuwi_watchdog(struct ifnet *ifp)
  * Stop the adapter and free any mbufs allocated to the
  * RX and TX lists.
  */
-Static void
+static void
 atuwi_stop(struct atuwi_softc *sc)
 {
 	usbd_status		err;
@@ -3883,7 +3883,7 @@ atuwi_stop(struct atuwi_softc *sc)
 		atuwi_profiling_stop++;
 #endif /* ATUWI_PROFILING */
 
-	ifp = &sc->arpcom.ac_if;
+	ifp = &sc->atuwi_ifp;
 	ifp->if_timer = 0;
 
 	DEBUG(FLAG_INIT, ("atuwi%d: atuwi_stop\n", sc->atuwi_unit));
@@ -3942,7 +3942,7 @@ atuwi_stop(struct atuwi_softc *sc)
 	/* Let's be nice and turn off the radio before we leave */
 	atuwi_switch_radio(sc, 0);
 
-	ifp->if_flags &= ~(IFF_RUNNING | IFF_OACTIVE);
+	ifp->if_flags &= ~(IFF_DRV_RUNNING | IFF_DRV_OACTIVE);
 	ATUWI_UNLOCK(sc);
 
 	return;
@@ -3953,8 +3953,8 @@ atuwi_stop(struct atuwi_softc *sc)
  * Stop all chip I/O so that the kernel's probe routines don't
  * get confused by errant DMAs when rebooting.
  */
-Static void
-atuwi_shutdown(device_ptr_t dev)
+static int
+atuwi_shutdown(device_t dev)
 {
 	struct atuwi_softc	*sc;
 
@@ -3962,7 +3962,7 @@ atuwi_shutdown(device_ptr_t dev)
 
 	atuwi_stop(sc);
 
-	return;
+	return (0);
 }
 
 
