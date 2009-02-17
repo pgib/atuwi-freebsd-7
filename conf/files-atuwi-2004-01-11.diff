@@ -1,0 +1,10 @@
+--- files~	Sun May 11 08:37:52 2003
++++ files	Fri Jan  9 14:15:50 2004
+@@ -763,6 +763,7 @@
+ dev/usb/usb_if.m	optional usb
+ dev/usb/hid.c		optional usb
+ dev/usb/if_aue.c	optional aue
++dev/usb/if_atuwi.c	optional atuwi
+ dev/usb/if_axe.c	optional axe
+ dev/usb/if_cue.c	optional cue
+ dev/usb/if_kue.c	optional kue

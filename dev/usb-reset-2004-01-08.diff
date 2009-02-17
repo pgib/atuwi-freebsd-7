@@ -1,0 +1,108 @@
+diff -ur usb.org/usb_port.h usb/usb_port.h
+--- usb.org/usb_port.h	Wed Oct  2 09:44:20 2002
++++ usb/usb_port.h	Wed Jan  7 20:26:55 2004
+@@ -435,6 +435,7 @@
+ /* Returns from attach */
+ #define USB_ATTACH_ERROR_RETURN	return ENXIO
+ #define USB_ATTACH_SUCCESS_RETURN	return 0
++#define USB_ATTACH_NEED_RESET		return EAGAIN
+ 
+ #define USB_ATTACH_SETUP \
+ 	sc->sc_dev = self; \
+diff -ur usb.org/usb_subr.c usb/usb_subr.c
+--- usb.org/usb_subr.c	Wed Jan 15 00:07:43 2003
++++ usb/usb_subr.c	Wed Jan  7 22:50:20 2004
+@@ -86,6 +86,9 @@
+ Static int usbd_print(void *aux, const char *pnp);
+ Static int usbd_submatch(device_ptr_t, void *, void *);
+ #endif
++Static usbd_status usbd_new_device2(device_ptr_t parent, usbd_bus_handle bus,
++		 		int depth, int speed, int port,
++		 		struct usbd_port *up);
+ Static void usbd_free_iface_data(usbd_device_handle dev, int ifcno);
+ Static void usbd_kill_pipe(usbd_pipe_handle);
+ Static usbd_status usbd_probe_and_attach(device_ptr_t parent,
+@@ -131,6 +134,7 @@
+ 	"SHORT_XFER",
+ 	"STALLED",
+ 	"INTERRUPTED",
++	"NEED_RESET",
+ 	"XXX",
+ };
+ 
+@@ -888,6 +892,14 @@
+ 			uaa.ifaceno = ifaces[i]->idesc->bInterfaceNumber;
+ 			dv = USB_DO_ATTACH(dev, bdev, parent, &uaa, usbd_print,
+ 					   usbd_submatch);
++
++			if (dev->address == USB_START_ADDR) {
++#if defined(__FreeBSD__)
++				device_delete_child(parent, bdev);
++#endif
++				return (USBD_NEED_RESET);
++			}
++			
+ 			if (dv != NULL) {
+ 				dev->subdevs[found++] = dv;
+ 				dev->subdevs[found] = 0;
+@@ -958,7 +970,7 @@
+  * and attach a driver.
+  */
+ usbd_status
+-usbd_new_device(device_ptr_t parent, usbd_bus_handle bus, int depth,
++usbd_new_device2(device_ptr_t parent, usbd_bus_handle bus, int depth,
+ 		int speed, int port, struct usbd_port *up)
+ {
+ 	usbd_device_handle dev;
+@@ -1099,6 +1111,12 @@
+ 
+ 	err = usbd_probe_and_attach(parent, dev, port, addr);
+ 	if (err) {
++		if (err == USBD_NEED_RESET) {
++			DPRINTFN(1,("usbd_new_device: device needs reset\n"));
++			/* must set address back to what it was */
++			dev->address = addr;
++		}
++	
+ 		usbd_remove_device(dev, up);
+ 		return (err);
+   	}
+@@ -1106,6 +1124,27 @@
+ 	usbd_add_dev_event(USB_EVENT_DEVICE_ATTACH, dev);
+   
+   	return (USBD_NORMAL_COMPLETION);
++}
++
++usbd_status
++usbd_new_device(device_ptr_t parent, usbd_bus_handle bus, int depth,
++		int speed, int ports, struct usbd_port *up)
++{
++	int		retry = 0;
++	usbd_status	err;
++	
++	err = usbd_new_device2(parent, bus, depth, speed, ports, up);
++	while ((err == USBD_NEED_RESET) && (retry++ < 5)) {
++		DPRINTFN(1,("usb_new_device: re-enumerating device\n"));
++		err = usbd_new_device2(parent, bus, depth, speed, ports, up);
++	}
++	
++	if (retry == 5) {
++		DPRINTFN(1,("usb_new_device: giving up after 5 tries...\n"));
++		return (USBD_NOT_CONFIGURED);
++	}
++	
++	return err;
+ }
+ 
+ usbd_status
+diff -ur usb.org/usbdi.h usb/usbdi.h
+--- usb.org/usbdi.h	Mon May  6 20:23:36 2002
++++ usb/usbdi.h	Wed Jan  7 21:45:11 2004
+@@ -66,6 +66,7 @@
+ 	USBD_SHORT_XFER,	/* 16 */
+ 	USBD_STALLED,		/* 17 */
+ 	USBD_INTERRUPTED,	/* 18 */
++	USBD_NEED_RESET,	/* 19 */
+ 
+ 	USBD_ERROR_MAX		/* must be last */
+ } usbd_status;

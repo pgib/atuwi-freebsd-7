@@ -1,0 +1,90 @@
+
+$ATUWI: $Id: CHANGELOG,v 1.4 2004/10/23 17:59:29 daan Exp $
+
+2004-10-23 --> Release 0.6
+
+2004-10-22 - Added a patch to fix a bug in the FreeBSD UHCI code.
+This bug prevented systems with an UHCI USB controller to boot (within an
+hour) with an atuwi device attached.
+
+2004-10-19 - ARGH!!!
+Forgot to remove some debug printf-ing from if_atuwi.c before releasing 0.5.
+The driver now says "Lal" for every sent packet :-s
+Let's release 0.6 soon.
+
+2004-10-18 --> Release 0.5
+
+2004-10-16 - Added the atuwi-compile script.
+
+2004-10-02 - Fixed a bug
+Fixed a bug that caused us to not see networks with an "" empty SSID.
+
+2004-09-30 - Added a device - AinComm AWU2000B
+Thanks to Chris Whitehouse for supplying the ID's
+VID: 0x12fd (AinComm)
+PID: 0x1001 (AWU2000B)
+Radio chipset: rfmd2958 / at76c505
+
+2004-09-14 - Added a device - Linksys WUSB11 v2.8
+Thanks to Alistair Phillips and Suihong Liang for supplying the ID's
+VID: 0x1915 (Linksys)
+PID: 0x2233 (WUSB11v28)
+Radio chipset: rfmd2958 / at76c505
+
+2004-08-23 - Added IFF_NEEDSGIANT to ifp->if_flags
+
+2004-08-11 - Added bpf support for DLT_AIRONET_HEADER
+This allows a user program to snif 802.11 packets with signal strength
+indication.
+
+2004-08-03 - Style fixes
+
+2004-06-29 - Added a device - Linksys
+
+2004-05-22 --> Release 0.4
+
+2004-05-22 - Added handling for de-authentication packets.
+If we receive a de-authentication packet the driver starts the
+authentication again to re-connect to the AP.
+
+
+2004-05-19 - Got the SMC2662W v.4 fully working
+VID: 0x03eb (Atmel)
+PID: 0x7614
+Radio chipset: rfmd2958 / at76c505
+The device required the right firmware image (destilled by hand from the
+wind0w$ driver) and some quirks.
+I believe I am the first one to get this device working outside of Wind0w$.
+
+
+2004-05-13 - Added support for the TRENDnet TEW-229UB
+VID: 0x03eb (Atmel)
+PID: 0x7613
+Radio chipset: rfmd2958 / at76c505
+
+
+2004-05-04 --> Release 0.3
+Fixed compile errors on 5.2 and later.
+
+
+2004-04-20 - Added (not working) support for the SMC 2662W v4
+VID: 0x03eb (Atmel)
+PID: 0x7614
+Radio chipset: rfmd2958 / at76c505
+Uploading the internal firmware fails, but if the firmware is already
+uploaded to the device using a Wind0ws PC (argh!) the device works like a
+charm. This is a non-option in my point of view, but it's the best I can do
+at this moment untill I have fully debugged the way Wind0ws uploads the
+firmware to the device at the bit level.
+Thanks to Martijn van Buul for pointing out the existence of these devices.
+
+
+2004-02-27 - Added a device
+Thanks to Peter Pilka for pointing out the USB ID's of the Sparklan WL-382f
+VID: 0x03eb (Atmel)
+PID: 0x7605
+Radio chipset: rfmd / at76c503a
+
+
+- Started CHANGELOG at version 0.2 - 2004-02-20 -
+

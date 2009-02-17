@@ -1,0 +1,226 @@
+#!/bin/sh
+
+error()
+{
+	echo "error:" $* :\( >/dev/stderr
+	exit 1;
+}
+
+safe_cd ()
+{
+	cd $* ||error "Can't cd to $*"
+}
+
+should_recompile_usb=0
+should_recompile_kernel=0
+
+
+## Intro
+#
+echo "		ATUWI driver compiler script"
+echo ""
+echo "Written by Daan Vreeken - Danovitsch @ Vitsch . net"
+echo ""
+
+
+## Determine our base (kernel sources) directory
+#
+if [ "$1" = "" ]; then
+	# If nothing is specified, check the current directory
+	BASE=`pwd`
+	if [ ! -d "${BASE}/net" ]; then
+		# If that fails, try the default ( /usr/src/sys )
+		BASE=/usr/src/sys
+	fi
+else
+	BASE=$1
+fi
+
+if [ ! -d "${BASE}/net" ]; then
+	echo "You need to have the kernel sources installed to compile the"
+	echo "atuwi driver."
+	echo ""
+	echo "If your kernel sources aren't in /usr/src/sys then please"
+	echo "specify the location of your sources when starting atuwi-compile."
+	echo "example:"
+	echo " atuwi-compile /home/some/where/src/sys"
+	echo ""
+	error "Can't find the kernel sources in ${BASE}"
+fi
+if [ ! -d "${BASE}/modules/atuwi" ]; then
+	echo "Can't find the atuwi driver files in ${BASE}"
+	echo "Please make sure you have un-tar'd the atuwi driver into"
+	echo "your kernel directory before you try to compile"
+fi
+
+safe_cd ${BASE}
+BASE=`pwd`
+
+echo "Kernel sources base directory: ${BASE}"
+echo ""
+
+
+## Check for the existence if_atuwi.c
+#
+if [ ! -f "${BASE}/dev/usb/if_atuwi.c" ]; then
+	echo "Make sure you have un-tarred the atuwi sources into your"
+	echo "kernel source directory before you start atuwi-compile"
+	echo ""
+	error "if_atuwi.c not found in ${BASE}/dev/usb/"
+fi
+
+
+## Download the latest usbdevs from the FreeBSD cvsweb interface
+#
+echo "Going to download the latest version of 'usbdevs' from www.FreeBSD.org"
+safe_cd ${BASE}/dev/usb
+
+if [ -f "usbdevs" -a ! -f "usbdevs.bck" ]; then
+	cp usbdevs usbdevs.bck ||
+	    error "Could not backup usbdevs to usbdevs.bck"
+fi
+
+URL="http://www.freebsd.org/cgi/cvsweb.cgi/~checkout~/src/sys/dev/usb/usbdevs"
+fetch -o usbdevs ${URL} ||{
+	echo ""
+	echo "Couldn't fetch usbdevs! (Is the network configured?)"
+	echo ""
+	echo "Do you want to continue anyway? (Make sure you have updated usbdevs"
+	echo "yourself if you choose to continue)"
+
+	echo -n "Choose [y/n]: "
+	answer=`head -n 1`
+
+	if [ "${answer}" != "y" -a "${answer}" != "Y" ]; then
+		echo "Didn't get 'y' as answer, stopping compiler script"
+		exit 1
+	fi
+
+	echo "Continuing without downloading usbdevs."
+}
+
+echo "  done."
+
+
+## Make the system aware of the new usbdevs file
+#
+if [ -f "Makefile.usbdevs" ]; then
+	# Old kernel, we need to 'make -f Makefile.usbdevs'
+	echo "Generating usbdevs list"
+	make -f Makefile.usbdevs >/dev/null ||
+	    error "Failed to 'make -f Makefile.usbdevs' list!"
+
+	echo "  done."
+else
+	# Newer kernel, usbdevs list is generated when compiling usb
+	should_recompile_usb=1
+fi
+
+
+## Apply the usb reset patch (if needed)
+#
+# We only apply the patch if the text "USBD_NEED_RESET" isn't found in usbdi.h
+#
+need_usb_patch=0
+grep USBD_NEED_RESET ${BASE}/dev/usb/usbdi.h >/dev/null ||need_usb_patch=1
+
+if [ "${need_usb_patch}" = "1" ]; then
+
+	echo "Applying the usb-reset patch"
+	safe_cd ${BASE}/dev
+	patch <usb-reset-2004-01-08.diff ||
+	    error "Could not apply usb reset patch!"
+
+	echo "  done."
+	should_recompile_usb=1
+	should_recompile_kernel=1
+else
+	echo "Skipping usb reset patch since it's already installed"
+fi
+
+
+## Apply the uhci waitintr patch (if needed)
+#
+# We only apply the patch if the text "UREAD2(sc, UHCI_STS) & UHCI_STS_USBINT"
+# is found in uhci.c
+#
+need_uhci_patch=0
+grep "UREAD2(sc, UHCI_STS) & UHCI_STS_USBINT" ${BASE}/dev/usb/uhci.c \
+    >/dev/null &&need_uhci_patch=1
+
+if [ "${need_uhci_patch}" = "1" ]; then
+
+	echo "Applying the uhci waitintr patch"
+	safe_cd ${BASE}/dev/usb
+	patch <uhci-waitintr-2004-10-22.diff ||
+	    error "Could not apply uhci waitintr patch!"
+
+	echo "  done."
+	should_recompile_usb=1
+	should_recompile_kernel=1
+else
+	echo "Skipping uhci waitintr patch since it's already installed"
+fi
+
+
+## Recompile usb subsystem if needed
+#
+if [ "${should_recompile_usb}" = "1" ]; then
+	echo "Recompiling the usb subsystem"
+	safe_cd ${BASE}/modules/usb
+	make >/dev/null ||
+	    error "Failed to compile usb subsystem"
+
+	echo "  done."
+fi
+
+
+## Add if_atuwi.c to the 'files' file. (so 'device atuwi' can be used in the
+# kernel config)
+#
+need_files_patch=0
+grep if_atuwi.c ${BASE}/conf/files >/dev/null ||need_files_patch=1
+
+if [ "${need_files_patch}" = "1" ]; then
+	echo "Patching conf/files"
+	safe_cd ${BASE}/conf
+	patch files files-atuwi-2004-01-11.diff ||
+	    error "Couldn't apply 'files' patch!"
+
+	echo "  done."
+else
+	echo "Skipping 'files' patch since it's already installed"
+fi
+
+
+## Try to compile the driver itself
+#
+echo ""
+echo "Compiling the driver"
+safe_cd ${BASE}/modules/atuwi
+touch ${BASE}/dev/usb/if_atuwi.c
+make >/dev/null ||
+    error "Failed to compile the driver"
+
+echo ""
+echo "=====> atuwi compiler is done :)"
+echo ""
+echo "You should now be able to load the atuwi driver module by typing :"
+echo "kldload ${BASE}/modules/atuwi/if_atuwi.ko"
+
+if [ "${should_recompile_kernel}" = "1" ]; then
+	echo ""
+	echo "Don't forget to recompile your kernel now and reboot for the"
+	echo "usb reset patch to take effect!"
+	echo ""
+	echo "Otherwise the driver will work, but you'll have to reset"
+	echo "the USB adapter yourself after the firmware is loaded to it."
+	echo "For details about how this is done, please read the atuwi"
+	echo "README in ${BASE}/modules/atuwi/atuwi-README.txt"
+else
+	echo ""
+	echo "If you want to compile the atuwi driver into your kernel,"
+	echo "add 'device atuwi' to your kernel config file, and recompile"
+	echo "recompile your kernel"
+fi
+
